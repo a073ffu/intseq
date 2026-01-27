@@ -3,75 +3,113 @@ import math, random
 from dataclasses import dataclass
 from typing import Callable, List, Tuple, Dict, Set, Union
 from collections import deque
-import program as program
-import weight
+import program_ver2 as program
+import weight_ver2 as weight
 
 
 # トークンごとの引数の数を定義
-TOKEN_ARG_COUNTS: Dict[str, int] = {
-    # 定数・変数（引数なし）
-    '0': 0, '1': 0, '2': 0, 'x': 0,
-    
-    # 二項演算子（引数2つ）
-    'plus': 2, 'minus': 2, 'multiply': 2, 
-    'division': 2, 'mod': 2,
-    
-    # 単項演算子（引数1つ）
-    'partial_sum': 1, 'partial_sum_of_squares': 1,
-    'self_convolution': 1, 'linear_weighted_partial_sums': 1,
-    'binomial': 1, 'inverse_binomial_transform': 1,
-    'product_of_two_consecutive_elements': 1, 'cassini': 1,
-    'first_stirling': 1, 'second_stirling': 1,
-    'first_differences': 1, 'catalan': 1,
-    'sum_of_divisors': 1, 'moebius': 1,
-    'hankel': 1, 'boustrophedon': 1
-}
+TOKEN_ARG_COUNTS: Dict[str, int] = {'0': 0,
+                    '1': 0,
+                    '2': 0,
+                    'x': 0,
+                    'n': 0,
+                    'affine_-1_-1': 1,
+                    'affine_-1_0': 1,
+                    'affine_-1_1': 1,
+                    'affine_1_-1': 1,
+                    'affine_1_0': 1,
+                    'affine_1_1': 1,
+                    'affine_2_-1': 1,
+                    'affine_2_0': 1,
+                    'affine_2_1': 1,
+                    'abs': 1,
+                    'neg': 1,
+                    'pow_2': 1,
+                    'pow_3': 1,
+                    'add': 2,
+                    'sub': 2,
+                    'mul': 2,
+                    'sdiv': 2,
+                    'smod': 2,
+                    'shift_1': 1,
+                    'shift_2': 1,
+                    'shift_-1': 1,
+                    'shift_-2': 1,
+                    'dilate_2': 1,
+                    'dilate_3': 1,
+                    'diff': 1,
+                    'diff2': 1,
+                    'cumsum': 1,
+                    'cumpowsum': 1,
+                    'conv_diff': 1,
+                    'conv_sum2': 1,
+                    'conv_laplace': 1,
+                    'ma_2': 1,
+                    'ma_3': 1,
+                    'dirichlet': 2,
+                    'mu': 0,
+                    'sigma_k0': 0,
+                    'sigma_k1': 0,
+                    'binomX': 1,
+                    'binomInvX': 1,
+                    'catalan': 1,
+                    'boustrophedon': 1,
+                    'alt': 0,
+                    'poly_n': 0
+                    }
 
 
 # 数列変換操作を表す定数辞書
 # 値は変換時の必要な追加長さまたは特別な文字列を示す
-NUM_REDUCING_NUMERIC_SEQUENCE_LENGTH_AFTER_CALC: Dict[str, Union[int, str]] = {
-    # 基本演算（値: 0）
-    '0': 0,
-    '1': 0,
-    '2': 0,
-    'x': 0,
-    'plus': 0,
-    'minus': 0,
-    'multiply': 0,
-    'division': 0,
-    'mod': 0,
-
-    # 部分和関連の演算（値: 0）
-    'partial_sum': 0,
-    'partial_sum_of_squares': 0,
-    'self_convolution': 0,
-    'linear_weighted_partial_sums': 0,
-
-    # 二項演算関連（値: 0）
-    'binomial': 0,
-    'inverse_binomial_transform': 0,
-
-    # 追加長さ1を必要とする演算
-    'product_of_two_consecutive_elements': 1,
-    'first_differences': 1,
-
-    # 追加長さ2を必要とする演算
-    'cassini': 2,
-
-    # 数論関連の変換（値: 0）
-    'first_stirling': 0,
-    'second_stirling': 0,
-    'catalan': 0,
-    'sum_of_divisors': 0,
-    'moebius': 0,
-
-    # 特別な文字列値を持つ演算
-    'hankel': 'Hankel',
-
-    # その他の変換（値: 0）
-    'boustrophedon': 0
-}
+NUM_REDUCING_NUMERIC_SEQUENCE_LENGTH_AFTER_CALC: Dict[str, Union[int, str]] = {'0': 0,
+                    '1': 0,
+                    '2': 0,
+                    'x': 0,
+                    'n': 0,
+                    'affine_-1_-1': 0,
+                    'affine_-1_0': 0,
+                    'affine_-1_1': 0,
+                    'affine_1_-1': 0,
+                    'affine_1_0': 0,
+                    'affine_1_1': 0,
+                    'affine_2_-1': 0,
+                    'affine_2_0': 0,
+                    'affine_2_1': 0,
+                    'abs': 0,
+                    'neg': 0,
+                    'pow_2': 0,
+                    'pow_3': 0,
+                    'add': 0,
+                    'sub': 0,
+                    'mul': 0,
+                    'sdiv': 0,
+                    'smod': 0,
+                    'shift_1': 0,
+                    'shift_2': 0,
+                    'shift_-1': 1,
+                    'shift_-2': 2,
+                    'dilate_2': 0,
+                    'dilate_3': 0,
+                    'diff': 1,
+                    'diff2': 2,
+                    'cumsum': 0,
+                    'cumpowsum': 0,
+                    'conv_diff': 0,
+                    'conv_sum2': 0,
+                    'conv_laplace': 0,
+                    'ma_2': 0,
+                    'ma_3': 0,
+                    'dirichlet': 0,
+                    'mu': 0,
+                    'sigma_k0': 0,
+                    'sigma_k1': 0,
+                    'binomX': 0,
+                    'binomInvX': 0,
+                    'catalan': 0,
+                    'boustrophedon': 0,
+                    'alt': 0,
+                    'poly_n': 0
+                    }
 
 class Node:
     def __init__(self, token, child_nodes:Node = None):
@@ -106,7 +144,6 @@ class Node:
         return is_x_bounded
 
 
-# コードレビューここから
 class ProgramGenerator:
     
     def __init__(self, max_depth:int):
@@ -225,7 +262,7 @@ class ProgramGenerator:
                     self.build_tree(child_node, depth + 1, force_deep_path=force_deep_for_child)
                 # 引数を取らない場合（葉ノード）は、ここで再帰は終了し、ツリーの枝がここで終わる
     
-            
+    
     # トークン名の変換テーブル（アルファベット→トークン名）
     TOKEN_MAP = [
         '0', '1', '2', 'x', 'plus', 'minus', 'multiply', 
@@ -289,6 +326,7 @@ class ProgramGenerator:
         
         return token_tree_stack
     
+
     def add_information_amount(self, information_amount): # 引数の値だけinformation_amountに加算
         self.information_amount += information_amount
     
@@ -341,4 +379,3 @@ def calculate_original_sequence_length(
         max_child_length = max(max_child_length, child_length)
     
     return max_child_length
-# コードレビューここまで

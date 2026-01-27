@@ -1,6 +1,6 @@
-import generate_program
-import program as program
-import weight
+import generate_program_ver2 as generate_program
+import program_ver2 as program
+import weight_ver2 as weight
 
 import numpy as np
 import random
@@ -57,6 +57,10 @@ def generate_initial_sequence_sample(depth=10, numeric_sequence_length=20)->dict
         except program.SequenceError as e:
             continue 
         except Exception as e: 
+            # 【変更】エラー内容を表示するようにする
+            print(f"DEBUG ERROR: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     print(f"ERROR: Failed to generate a valid initial sequence after {max_attempts} attempts. Check program generation logic.")
@@ -120,7 +124,7 @@ def generate_dependent_sequence_sample(data:dict, depth:int, numeric_sequence_le
                     'transformed_sequence_depth': program_gen_2.max_depth # ★ program_depth_2 も一貫性を持たせるため変更推奨 ★
                 }
             )
-
+            '''コード変更により不要
             # 依存数列の順序変更 (ランダムにseq1とseq2をスワップ)
             # 複雑度情報 (initial_sequence_info_amount, transformed_sequence_info_amount) はスワップしないようにする
             if random.random() < 0.5:
@@ -145,12 +149,16 @@ def generate_dependent_sequence_sample(data:dict, depth:int, numeric_sequence_le
                 data_updated.update({'was_swapped':1})
             else:
                 data_updated.update({'was_swapped':0})
-            
+            '''
             return data_updated
 
         except program.SequenceError as e:
             continue 
         except Exception as e: 
+            # 【変更】エラー内容を表示するようにする
+            print(f"DEBUG ERROR: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     print(f"ERROR: Failed to generate a valid dependent sequence after {max_attempts} attempts for initial data: {data['token_sequence_1']}. Check program generation logic.")
@@ -193,7 +201,7 @@ def generate_classification_data(depth:int = None, num_samples=10000):
         # generate_classification_data() と呼び出された場合、random.randint(3,8) が使われる。
         # ここは、generate_classification_data が ProgramGenerator の max_depth を制御するポイント。
         dependent_sample = generate_dependent_sequence_sample(
-            initial_sample, 
+            data=initial_sample, 
             depth=depth if depth is not None else random.randint(3,8), # ★ ここは generate_classification_data の引数に従う ★
             is_x_bounded=is_bounded_request
         )

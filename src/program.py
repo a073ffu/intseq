@@ -7,22 +7,22 @@ import numpy as np
 import sys # sys.float_info.max を使用するため
 
 class SequenceError(Exception):
-    def __init__(self):
-        super().__init__("Insufficient elements for sequence generation.")
+    def __init__(self, message="Insufficient elements for sequence generation."): # ★ ここを修正: message引数を追加 ★
+        super().__init__(message) # ★ ここも修正: messageを渡す ★
 
 class Program:
     def __init__(self, **kwarg:Dict[str, Program]):
         self.sub_programs = kwarg
 
 class Constant(Program):
-    def __init__(self, i, numeric_sequence_length:int =20):
+    def __init__(self, i, numeric_sequence_length:int =40):
         super().__init__()
         assert(i in [0,1,2])
         self.i = i
         self.numeric_sequence_length = numeric_sequence_length
 
     def calc(self, x: List[int]) -> List[int]:
-         return [self.i] * self.numeric_sequence_length
+         return [int(self.i)] * self.numeric_sequence_length
 
 
 class Variable(Program):
@@ -47,7 +47,7 @@ class Plus(Program):
             raise SequenceError()
         
         for num in range(min(len(seq_a), len(seq_b))):
-            seq.append(seq_a[num] + seq_b[num])
+            seq.append(int(seq_a[num] + seq_b[num]))
 
         return seq 
 
@@ -61,7 +61,7 @@ class Minus(Program):
             raise SequenceError()
         
         for num in range(min(len(seq_a), len(seq_b))):
-            seq.append(seq_a[num] - seq_b[num])
+            seq.append(int(seq_a[num] - seq_b[num]))
 
         return seq 
 
@@ -75,7 +75,7 @@ class Multiply(Program):
             raise SequenceError()
         
         for num in range(min(len(seq_a), len(seq_b))):
-            seq.append(seq_a[num] * seq_b[num])
+            seq.append(int(seq_a[num] * seq_b[num]))
 
         return seq 
 
@@ -91,9 +91,9 @@ class Division(Program):
         for num in range(min(len(seq_a), len(seq_b))):
             if seq_b[num]==0:
                 #print("zero Division")
-                seq.append(seq_a[num])
+                seq.append(int(seq_a[num]))
             else:
-                seq.append(seq_a[num] // seq_b[num])
+                seq.append(int(seq_a[num] // seq_b[num]))
 
         return seq 
 
@@ -109,29 +109,29 @@ class Mod(Program):
         for num in range(min(len(seq_a), len(seq_b))):
             if seq_b[num]==0:
                 #print("zero Division")
-                seq.append(seq_a[num])
+                seq.append(int(seq_a[num]))
             else:
-                seq.append(seq_a[num] % seq_b[num])
+                seq.append(int(seq_a[num] % seq_b[num]))
 
         return seq 
 
 class Partial_sum(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
-        seq = [seq_x[0]]
+        seq = [int(seq_x[0])]
 
         for num in range(len(seq_x)-1):
-            seq.append(seq[num] + seq_x[num+1])
+            seq.append(int(seq[num] + seq_x[num+1]))
 
         return seq
 
 class Partial_sum_of_squares(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
-        seq = [seq_x[0]**2]
+        seq = [int(seq_x[0]**2)]
 
         for num in range(len(seq_x)-1):
-            seq.append(seq[num] + seq_x[num+1]**2)
+            seq.append(int(seq[num] + seq_x[num+1]**2))
 
         return seq
 
@@ -147,17 +147,17 @@ class Self_convolution(Program):
             sum = 0
             for j in range(i+1):
                 sum += seq_x[j] * seq_x[i - j]
-            seq.append(sum)
+            seq.append(int(sum))
 
         return seq
 
 class Linear_weighted_partial_sums(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
-        seq = [0]
+        seq = [int(0)]
 
         for num in range(1, len(seq_x)):
-            seq.append(seq[num-1] + num * seq_x[num])
+            seq.append(int(seq[num-1] + num * seq_x[num]))
         
         return seq
 
@@ -170,7 +170,7 @@ class Binomial(Program):
             sum = 0
             for j in range(i+1):
                 sum += math.comb(i, j) * seq_x[j]
-            seq.append(sum)
+            seq.append(int(sum))
             
         return seq
     
@@ -183,7 +183,7 @@ class Inverse_binomial_transform(Program):
             sum = 0
             for j in range(i+1):
                 sum += (-1)**j * math.comb(i, j) * seq_x[j]
-            seq.append(sum)
+            seq.append(int(sum))
             
         return seq
 
@@ -197,7 +197,7 @@ class Product_of_two_consecutive_elements(Program):
             raise SequenceError()
 
         for num in range(seq_x_length-1):
-            seq.append(seq_x[num] * seq_x[num+1])
+            seq.append(int(seq_x[num] * seq_x[num+1]))
         
         return seq
 
@@ -211,7 +211,7 @@ class Cassini(Program):
             raise SequenceError()
 
         for num in range(1, seq_x_length-1):
-            seq.append(seq_x[num-1] * seq_x[num+1] - seq_x[num]**2)
+            seq.append(int(seq_x[num-1] * seq_x[num+1] - seq_x[num]**2))
         
         return seq
 
@@ -224,7 +224,7 @@ class First_stirling(Program):
             sum = 0
             for j in range(i+1):
                 sum += stirling(i, j, kind=1) * seq_x[j]
-            seq.append(sum)
+            seq.append(int(sum))
         
         return seq
 
@@ -237,7 +237,7 @@ class Second_stirling(Program):
             sum = 0
             for j in range(i+1):
                 sum += stirling(i, j, kind=2) * seq_x[j]
-            seq.append(sum)
+            seq.append(int(sum))
         
         return seq
 
@@ -251,20 +251,20 @@ class First_differences(Program):
             raise SequenceError()
 
         for num in range(1, seq_x_length):
-            seq.append(seq_x[num] - seq_x[num-1])
+            seq.append(int(seq_x[num] - seq_x[num-1]))
         
         return seq
 
 class Catalan(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
-        seq =[catalan(0) * seq_x[0]]
+        seq =[int(catalan(0) * seq_x[0])]
         
         for i in range(1, len(seq_x)):
             sum = 0
             for j in range(i+1):
                 sum += math.comb(2*i - j - 1, i - j) * j * seq_x[j] // i
-            seq.append(sum)
+            seq.append(int(sum))
 
         return seq
 
@@ -272,14 +272,14 @@ class Sum_of_divisors(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
         seq_x_length = len(seq_x)
-        seq = [0]
+        seq = [int(0)]
 
         for num in range(1, seq_x_length):
             seq.append(0)
             divs = make_divisors(num)
             
             for divs_num in range(len(divs)):
-                seq[num] += seq_x[divs[divs_num]]
+                seq[num] += int(seq_x[divs[divs_num]])
         
         return seq
 
@@ -287,7 +287,7 @@ class Moebius(Program):
     def calc(self, x: List[int]) -> List[int]:
         seq_x = self.sub_programs['a'].calc(x)
         seq_x_length = len(seq_x)
-        seq =[0]
+        seq =[int(0)]
 
         for num in range(1, seq_x_length):
             seq.append(0)
@@ -295,6 +295,7 @@ class Moebius(Program):
             
             for divs_num in range(len(divs)):
                 seq[num] += mobius(num // divs[divs_num]) * seq_x[divs[divs_num]]
+            seq[num] = int(seq[num])
         
         return seq
 
@@ -363,24 +364,65 @@ class Boustrophedon(Program):
 
         return seq
 
-def check_if_constant_sequence(seq: List[Union[int, float]]) -> bool:
+def check_if_constant_sequence(seq: List[Union[int, float]], n: int = None) -> bool:
     """
-    与えられた数列が定数列であるかどうかをチェックします。
-    すべての要素が同じであればTrueを返します。
+    与えられた数列が定数列であるかどうか、または先頭/末尾n個が定数列であるかをチェックします。
+    nが指定されない場合、完全に定数列であるかチェックします。
+    nが指定された場合、先頭n個または末尾n個が定数列であるかチェックします。
     """
-    if not seq: # 空の数列は定数列とみなさない
+    if not seq:
         return False
-    
-    first_element = seq[0]
-    for element in seq[1:]:
-        # 浮動小数点誤差を考慮する場合
-        if isinstance(element, float) or isinstance(first_element, float):
-            if abs(element - first_element) > 1e-9: # 小さい閾値を設ける
-                return False
-        else: # 整数値の場合
-            if element != first_element:
-                return False
-    return True
+
+    if n is None: # nが指定されない場合、従来の完全な定数列チェック
+        first_element = seq[0]
+        for element in seq[1:]:
+            if isinstance(element, float) or isinstance(first_element, float):
+                if abs(element - first_element) > 1e-9:
+                    return False
+            else:
+                if element != first_element:
+                    return False
+        return True
+    else: # nが指定された場合、部分的な定数列チェック
+        if n <= 0:
+            raise ValueError("n must be a positive integer for partial constant sequence check.")
+        if n > len(seq): # nが数列長を超える場合、全体チェックと同じ
+            n = len(seq)
+
+        # 先頭n個のチェック
+        if n > 0: # nが0より大きい場合のみチェック
+            first_element_head = seq[0]
+            is_head_constant = True
+            for i in range(1, n):
+                if isinstance(seq[i], float) or isinstance(first_element_head, float):
+                    if abs(seq[i] - first_element_head) > 1e-9:
+                        is_head_constant = False
+                        break
+                else:
+                    if seq[i] != first_element_head:
+                        is_head_constant = False
+                        break
+            if is_head_constant:
+                return True
+
+        # 末尾n個のチェック
+        if n > 0 and len(seq) >= n: # nが0より大きく、数列長がn以上の場合のみチェック
+            first_element_tail = seq[len(seq) - n]
+            is_tail_constant = True
+            for i in range(len(seq) - n + 1, len(seq)):
+                if isinstance(seq[i], float) or isinstance(first_element_tail, float):
+                    if abs(seq[i] - first_element_tail) > 1e-9:
+                        is_tail_constant = False
+                        break
+                else:
+                    if seq[i] != first_element_tail:
+                        is_tail_constant = False
+                        break
+            if is_tail_constant:
+                return True
+        
+        return False # どちらも該当しない場合
+
 
 def check_if_arithmetic_progression(seq: List[Union[int, float]]) -> bool:
     """

@@ -11,8 +11,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 # --- ハイパーパラメータの定義 ---
 MAX_SEQUENCE_LENGTH = 20
 EMBEDDING_DIM = 128
+EPOCHS = 10
+BATCH_SIZE = 32
 TRAIN_TEST_SPLIT_RATIO = 0.8 
-DROPOUT = 0.3
+DROPOUT = 0.4
 
 PRIMES=(2,3,5,7)
 MAX_VP=40
@@ -35,7 +37,7 @@ def margin_ranking_loss(y_pm1, dAB, dAC, margin=0.2):
     return tf.reduce_mean(tf.maximum(0.0, margin - y_pm1 * (dAC - dAB)))
 
 # ===== 各ストリームの極小エンコーダ =====
-def make_seq_encoder(input_shape, emb_dim=128, dropout=0.3, name="enc_seq"):
+def make_seq_encoder(input_shape, emb_dim=128, dropout=DROPOUT, name="enc_seq"):
     """連続特徴（float32, shape=(L, F)）用: Conv1D→GAP→Dense→L2"""
     inp = keras.Input(shape=input_shape, dtype="float32", name=f"{name}_in")
     x = layers.Conv1D(64, 3, padding="same", activation="relu")(inp)
@@ -47,7 +49,7 @@ def make_seq_encoder(input_shape, emb_dim=128, dropout=0.3, name="enc_seq"):
 
 def make_factor_encoder(seq_len, chan_dim,  # chan_dim = 2 * len(primes)  (mod p, v_p)
                         mod_vocabs, vp_vocab, token_dim=8, emb_dim=128,
-                        dropout=0.3, name="enc_factor"):
+                        dropout=DROPOUT, name="enc_factor"):
     """mod/vp（int32, shape=(L, chan_dim)）用: primeごとにEmbedding→結合→Conv1D→GAP→Dense→L2"""
     inp = keras.Input(shape=(seq_len, chan_dim), dtype="int32", name=f"{name}_in")
     embedded = []
@@ -66,7 +68,7 @@ def make_factor_encoder(seq_len, chan_dim,  # chan_dim = 2 * len(primes)  (mod p
     x = layers.Lambda(l2n)(x)
     return keras.Model(inp, x, name=name)
 
-def make_bin_encoder(seq_len, n_bins, token_dim=16, emb_dim=128, dropout=0.3, name="enc_bin"):
+def make_bin_encoder(seq_len, n_bins, token_dim=16, emb_dim=128, dropout=DROPOUT, name="enc_bin"):
     """分位ビン列（int32, shape=(L,)）用: Embedding→Conv1D→GAP→Dense→L2"""
     inp = keras.Input(shape=(seq_len,), dtype="int32", name=f"{name}_in")
     x = layers.Embedding(input_dim=n_bins, output_dim=token_dim, mask_zero=False)(inp)
@@ -84,60 +86,39 @@ class GatedConcatL2(layers.Layer):
     def build(self, input_shapes):
         # 3ストリーム前提（Seq, Factor, Bin）
         self.alpha_seq    = self.add_weight("alpha_seq",    shape=(), initializer="zeros", trainable=True, dtype=tf.float32)
-        self.alpha_factor = self.add_weight("alpha_factor", shape=(), initializer="zeros", trainable=True, dtype=tf.float32)
-        self.alpha_bin    = self.add_weight("alpha_bin",    shape=(), initializer="zeros", trainable=True, dtype=tf.float32)
     def call(self, inputs):
-        z_seq, z_factor, z_bin = inputs
+        z_seq = inputs
         g_seq    = tf.nn.softplus(self.alpha_seq)
-        g_factor = tf.nn.softplus(self.alpha_factor)
-        g_bin    = tf.nn.softplus(self.alpha_bin)
-        z = tf.concat([g_seq*z_seq, g_factor*z_factor, g_bin*z_bin], axis=-1)
+        z = tf.concat([g_seq*z_seq], axis=-1)
         return l2n(z)
 
 # ===== モデル構築（Siamese：A/B/Cで重み共有） =====
-def build_siamese_seq_factor_bin(
+def build_siamese_seq_factor(
     shape_seq,          # 例: (MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)        float32
-    shape_factor,       # 例: (MAX_SEQUENCE_LENGTH, len(PRIMES)*2)    int32
-    shape_bin,          # 例: (MAX_SEQUENCE_LENGTH-1,)                int32
-    n_bins,             # 例: N_BINS
-    primes=(2,3,5,7),   # mod の語彙（素数）
-    vp_vocab=41,        # v_p の語彙（0..MAX_VP）
     emb_dim=128,
     margin=0.2,
     lr=1e-3
 ):
     # 共有エンコーダ
     enc_seq    = make_seq_encoder(shape_seq, emb_dim=emb_dim, name="enc_seq")
-    enc_factor = make_factor_encoder(seq_len=shape_factor[0], chan_dim=shape_factor[1],
-                                     mod_vocabs=primes, vp_vocab=vp_vocab,
-                                     token_dim=8, emb_dim=emb_dim, dropout=0.3, name="enc_factor")
-    enc_bin    = make_bin_encoder(seq_len=shape_bin[0], n_bins=n_bins,
-                                  token_dim=16, emb_dim=emb_dim, dropout=0.3, name="enc_bin")
+    shared_gated_concat = GatedConcatL2(name="shared_gated_concat_l2")
 
     # 入力（数列A/B/C × 3ストリーム）
     A_seq = keras.Input(shape=shape_seq,   dtype="float32", name="A_seq")
-    A_factor = keras.Input(shape=shape_factor, dtype="int32", name="A_factor")
-    A_bin = keras.Input(shape=shape_bin,   dtype="int32",   name="A_bin")
 
     B_seq = keras.Input(shape=shape_seq,   dtype="float32", name="B_seq")
-    B_factor = keras.Input(shape=shape_factor, dtype="int32", name="B_factor")
-    B_bin = keras.Input(shape=shape_bin,   dtype="int32",   name="B_bin")
 
     C_seq = keras.Input(shape=shape_seq,   dtype="float32", name="C_seq")
-    C_factor = keras.Input(shape=shape_factor, dtype="int32", name="C_factor")
-    C_bin = keras.Input(shape=shape_bin,   dtype="int32",   name="C_bin")
 
     # 各ストリームをエンコード
-    def embed_triplet(inp_seq, inp_factor, inp_bin, suffix=""):
+    def embed_triplet(inp_seq):
         z_seq    = enc_seq(inp_seq)
-        z_factor = enc_factor(inp_factor)
-        z_bin    = enc_bin(inp_bin)
-        z = GatedConcatL2(name="gated_concat_l2"+suffix)([z_seq, z_factor, z_bin])
+        z = shared_gated_concat([z_seq])
         return z
 
-    zA = embed_triplet(A_seq, A_factor, A_bin, "A")
-    zB = embed_triplet(B_seq, B_factor, B_bin, "B")
-    zC = embed_triplet(C_seq, C_factor, C_bin, "C")
+    zA = embed_triplet(A_seq)
+    zB = embed_triplet(B_seq)
+    zC = embed_triplet(C_seq)
 
     # 距離
     dAB = layers.Lambda(lambda t: cosine_distance(t[0], t[1]), name="dAB")([zA, zB])  # (B,1)
@@ -148,7 +129,7 @@ def build_siamese_seq_factor_bin(
     loss  = layers.Lambda(lambda t: margin_ranking_loss(t[0], t[1], t[2], margin))([y_pm1, dAB, dAC])
 
     model = keras.Model(
-        inputs=[A_seq, A_factor, A_bin, B_seq, B_factor, B_bin, C_seq, C_factor, C_bin, y_pm1],
+        inputs=[A_seq, B_seq, C_seq, y_pm1],
         outputs=[dAB, dAC],
         name="siamese_seq_factor_bin"
     )
@@ -229,7 +210,7 @@ def make_seq_features_intsafe(seq, target_len=20, use_clip=True, q=0.995):
 
     return feats.astype(np.float32)  # 学習直前にfloat32
 
-SEQ_INPUT_NUM = 5
+SEQ_INPUT_NUM = 1
 
 # --- 数列を素数剰余とp進指数形に変換 ---
 def vp(x, p, max_vp=40):
@@ -281,7 +262,7 @@ if __name__ == "__main__":
     
     # ★ 1. ロードするデータセットファイルの指定 ★
     DATASET_FILES = [
-        "comparison_datasets/comparison_data_depth_1-10.pkl"# generate_comparison_datasets.py で生成したファイル名に合わせる
+        "comparison_datasets/comparison_data_ver3_fixed_A.pkl"# generate_comparison_datasets.py で生成したファイル名に合わせる
         # 例: 複数の深さの比較データを結合する場合
         # "comparison_datasets/comparison_data_depth_1-10.pkl",
         # "comparison_datasets/comparison_data_depth_11-15.pkl",
@@ -331,120 +312,195 @@ if __name__ == "__main__":
         print(f"Using all {len(sampled_samples_raw)} loaded samples for training and evaluation.")
     
     # --- 4. データ準備 (3つの入力) ---
-    X_A_raw = [s['numeric_sequence_A'] for s in sampled_samples_raw]
-    X_B_raw = [s['numeric_sequence_B'] for s in sampled_samples_raw]
-    X_C_raw = [s['numeric_sequence_C'] for s in sampled_samples_raw]
+    X_A_raw = np.array([s['numeric_sequence_A'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
+    X_B_raw = np.array([s['numeric_sequence_B'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
+    X_C_raw = np.array([s['numeric_sequence_C'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
     y_labels_raw = [s['target_label'] for s in sampled_samples_raw] 
 
     # NumPy変換と数列の変換
-    X_A_seq = np.array([make_seq_features_intsafe(seq) for seq in X_A_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
-    X_B_seq = np.array([make_seq_features_intsafe(seq) for seq in X_B_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
-    X_C_seq = np.array([make_seq_features_intsafe(seq) for seq in X_C_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
-    X_A_factor = np.array([transform_sequence_mod_vp(seq, PRIMES) for seq in X_A_raw], dtype=np.int32)
-    X_B_factor = np.array([transform_sequence_mod_vp(seq, PRIMES) for seq in X_B_raw], dtype=np.int32)
-    X_C_factor = np.array([transform_sequence_mod_vp(seq, PRIMES) for seq in X_C_raw], dtype=np.int32)
-    X_A_bin = np.array([transform_sequence_diff(seq) for seq in X_A_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH-1)
-    X_B_bin = np.array([transform_sequence_diff(seq) for seq in X_B_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH-1)
-    X_C_bin = np.array([transform_sequence_diff(seq) for seq in X_C_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH-1)
+    X_A_seq = np.array([signed_log1p(seq) for seq in X_A_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
+    X_B_seq = np.array([signed_log1p(seq) for seq in X_B_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
+    X_C_seq = np.array([signed_log1p(seq) for seq in X_C_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
     y_labels = np.array(y_labels_raw, dtype=np.int32)
 
     # 訓練データとテストデータに分割
     # 3つの入力 (X_A_seq, X_B_seq, X_C_seq) と1つのターゲット (y_labels)
-    X_train_A_seq, X_test_A_seq, X_train_A_factor, X_test_A_factor, X_train_A_bin, X_test_A_bin, X_train_B_seq, X_test_B_seq, X_train_B_factor, X_test_B_factor, X_train_B_bin, X_test_B_bin, X_train_C_seq, X_test_C_seq, X_train_C_factor, X_test_C_factor, X_train_C_bin, X_test_C_bin, \
+    X_train_A_seq, X_test_A_seq, X_train_B_seq, X_test_B_seq, X_train_C_seq, X_test_C_seq, \
     y_train, y_test = train_test_split(
-        X_A_seq, X_A_factor, X_A_bin, X_B_seq, X_B_factor, X_B_bin, X_C_seq, X_C_factor, X_C_bin, y_labels,
+        X_A_seq, X_B_seq, X_C_seq, y_labels,
         test_size=1 - TRAIN_TEST_SPLIT_RATIO, 
         random_state=42,
         stratify=y_labels # 分類問題なのでstratifyでラベル分布を維持
     )
 
     # 訓練データを検証データと分割
-    X_train_A_seq, X_val_A_seq, X_train_A_factor, X_val_A_factor, X_train_A_bin, X_val_A_bin, X_train_B_seq, X_val_B_seq, X_train_B_factor, X_val_B_factor, X_train_B_bin, X_val_B_bin, X_train_C_seq, X_val_C_seq, X_train_C_factor, X_val_C_factor, X_train_C_bin, X_val_C_bin, \
+    X_train_A_seq, X_val_A_seq, X_train_B_seq, X_val_B_seq, X_train_C_seq, X_val_C_seq, \
     y_train, y_val = train_test_split(
-        X_train_A_seq, X_train_A_factor, X_train_A_bin, X_train_B_seq, X_train_B_factor, X_train_B_bin, X_train_C_seq, X_train_C_factor, X_train_C_bin, y_train,
+        X_train_A_seq, X_train_B_seq, X_train_C_seq, y_train,
         test_size=1 - TRAIN_TEST_SPLIT_RATIO, 
         random_state=42,
         stratify=y_train # 分類問題なのでstratifyでラベル分布を維持
     )
 
-    # ビン化
-    edges = compute_bin_edges(list(X_train_B_bin) + list(X_train_C_bin), 
-                              n_bins=N_BINS)
 
-    # 訓練データの分位境界を用いて，データを分位ビニング
-    X_train_A_bin = np.array([sequence_to_bins(seq, edges) for seq in X_train_A_bin], dtype=np.int32)
-    X_train_B_bin = np.array([sequence_to_bins(seq, edges) for seq in X_train_B_bin], dtype=np.int32)
-    X_train_C_bin = np.array([sequence_to_bins(seq, edges) for seq in X_train_C_bin], dtype=np.int32)
-    X_val_A_bin = np.array([sequence_to_bins(seq, edges) for seq in X_val_A_bin], dtype=np.int32)
-    X_val_B_bin = np.array([sequence_to_bins(seq, edges) for seq in X_val_B_bin], dtype=np.int32)
-    X_val_C_bin = np.array([sequence_to_bins(seq, edges) for seq in X_val_C_bin], dtype=np.int32)
-    X_test_A_bin = np.array([sequence_to_bins(seq, edges) for seq in X_test_A_bin], dtype=np.int32)
-    X_test_B_bin = np.array([sequence_to_bins(seq, edges) for seq in X_test_B_bin], dtype=np.int32)
-    X_test_C_bin = np.array([sequence_to_bins(seq, edges) for seq in X_test_C_bin], dtype=np.int32)
+    # 形状（あなたの配列から取得）
+    shape_seq    = X_train_A_seq.shape[1:]       # (L, F)
 
+    # 0/1 → +1/-1 に変換
+    y_train_pm1 = np.where(y_train == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
+    y_val_pm1   = np.where(y_val   == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
+    y_test_pm1  = np.where(y_test  == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
 
-# 形状（あなたの配列から取得）
-shape_seq    = X_train_A_seq.shape[1:]       # (L, F)
-shape_factor = X_train_A_factor.shape[1:]    # (L, 2*len(PRIMES))
-shape_bin    = X_train_A_bin.shape[1:]       # (L-1,)
+    model = build_siamese_seq_factor(
+        shape_seq=shape_seq,
+        emb_dim=128,
+        margin=0.2,
+        lr=1e-3
+    )
 
-# 0/1 → +1/-1 に変換
-y_train_pm1 = np.where(y_train == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
-y_val_pm1   = np.where(y_val   == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
-y_test_pm1  = np.where(y_test  == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
+    callbacks_list = [
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True),
+        keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-5)
+    ]
 
-model = build_siamese_seq_factor_bin(
-    shape_seq=shape_seq,
-    shape_factor=shape_factor,
-    shape_bin=shape_bin,
-    n_bins=N_BINS,
-    primes=PRIMES,          # (2,3,5,7)
-    vp_vocab=MAX_VP+1,      # 0..MAX_VP
-    emb_dim=128,
-    margin=0.2,
-    lr=1e-3
-)
-
-callbacks_list = [
-    keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True),
-    keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-5)
-]
-
-history = model.fit(
-    {
-        "A_seq": X_train_A_seq, "A_factor": X_train_A_factor, "A_bin": X_train_A_bin,
-        "B_seq": X_train_B_seq, "B_factor": X_train_B_factor, "B_bin": X_train_B_bin,
-        "C_seq": X_train_C_seq, "C_factor": X_train_C_factor, "C_bin": X_train_C_bin,
-        "y_pm1": y_train_pm1,
-    },
-    epochs=30, batch_size=128,
-    validation_data=(
+    history = model.fit(
         {
-            "A_seq": X_val_A_seq, "A_factor": X_val_A_factor, "A_bin": X_val_A_bin,
-            "B_seq": X_val_B_seq, "B_factor": X_val_B_factor, "B_bin": X_val_B_bin,
-            "C_seq": X_val_C_seq, "C_factor": X_val_C_factor, "C_bin": X_val_C_bin,
-            "y_pm1": y_val_pm1,
-        }, None
-    ),
-    callbacks=callbacks_list,
-    verbose=1
-)
+            "A_seq": X_train_A_seq, 
+            "B_seq": X_train_B_seq,  
+            "C_seq": X_train_C_seq,  
+            "y_pm1": y_train_pm1,
+        },
+        epochs=30, batch_size=128,
+        validation_data=(
+            {
+                "A_seq": X_val_A_seq, 
+                "B_seq": X_val_B_seq, 
+                "C_seq": X_val_C_seq, 
+                "y_pm1": y_val_pm1,
+            }, None
+        ),
+        callbacks=callbacks_list,
+        verbose=1
+    )
 
-# --- 推論＆評価（dAB < dAC → 予測=+1） ---
-dAB_test, dAC_test = model.predict({
-    "A_seq": X_test_A_seq, "A_factor": X_test_A_factor, "A_bin": X_test_A_bin,
-    "B_seq": X_test_B_seq, "B_factor": X_test_B_factor, "B_bin": X_test_B_bin,
-    "C_seq": X_test_C_seq, "C_factor": X_test_C_factor, "C_bin": X_test_C_bin,
-    "y_pm1": y_test_pm1,  # 未使用だが入力は必要
-}, verbose=0)
-y_pred_pm1 = (dAB_test.flatten() < dAC_test.flatten()).astype(np.int32)  # True→1, False→0
-y_true_pm1 = (y_test_pm1.flatten() == 1.0).astype(np.int32)
+    # --- 推論＆評価（dAB < dAC → 予測=+1） ---
+    dAB_test, dAC_test = model.predict({
+        "A_seq": X_test_A_seq, 
+        "B_seq": X_test_B_seq, 
+        "C_seq": X_test_C_seq, 
+        "y_pm1": y_test_pm1,  # 未使用だが入力は必要
+    }, verbose=0)
+    y_pred_pm1 = tf.cast((dAB_test.values < dAC_test.values), dtype=tf.int32).numpy()  # True→1, False→0
+    y_true_pm1 = (y_test_pm1.flatten() == 1.0).astype(np.int32)
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-print("ACC:", accuracy_score(y_true_pm1, y_pred_pm1))
-print("P  :", precision_score(y_true_pm1, y_pred_pm1))
-print("R  :", recall_score(y_true_pm1, y_pred_pm1))
-print("F1 :", f1_score(y_true_pm1, y_pred_pm1))
-# 参考で AUC（距離差 dAC - dAB をスコアに）
-scores = (dAC_test - dAB_test).flatten()
-print("AUC:", roc_auc_score(y_true_pm1, scores))
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+    print("ACC:", accuracy_score(y_true_pm1, y_pred_pm1))
+    print("P  :", precision_score(y_true_pm1, y_pred_pm1))
+    print("R  :", recall_score(y_true_pm1, y_pred_pm1))
+    print("F1 :", f1_score(y_true_pm1, y_pred_pm1))
+    # 参考で AUC（距離差 dAC - dAB をスコアに）
+    scores = (dAC_test.values - dAB_test.values).numpy().flatten()
+    print("AUC:", roc_auc_score(y_true_pm1, scores))
+# ランダム数列A
+# ★ 1. ロードするデータセットファイルの指定 ★
+    DATASET_FILES = [
+        "comparison_datasets/comparison_data_ver3_randam_A.pkl"# generate_comparison_datasets.py で生成したファイル名に合わせる
+        # 例: 複数の深さの比較データを結合する場合
+        # "comparison_datasets/comparison_data_depth_1-10.pkl",
+        # "comparison_datasets/comparison_data_depth_11-15.pkl",
+    ]
+
+    # --- 2. データセットのロードと結合 ---
+    all_raw_samples = [] 
+
+    print("\n--- Loading datasets from specified files ---")
+    for file_path in DATASET_FILES:
+        if not os.path.exists(file_path):
+            print(f"Warning: File not found: {file_path}. Skipping.")
+            continue
+        
+        start_time_load = time.time()
+        try:
+            with open(file_path, 'rb') as f:
+                data = pickle.load(f)
+            end_time_load = time.time()
+            print(f"Loaded {len(data)} samples from {file_path} in {end_time_load - start_time_load:.2f} seconds.")
+            all_raw_samples.extend(data) 
+        except Exception as e:
+            print(f"Error loading data from {file_path}: {e}. Skipping this file.")
+            continue
+    
+    if not all_raw_samples:
+        print("Error: No data loaded from any specified files. Please check DATASET_FILES paths.")
+        exit()
+
+    print(f"\nTotal raw samples loaded: {len(all_raw_samples)}")
+
+    # --- 3. 必要サンプル数のチェックとサンプリング ---
+    if len(all_raw_samples) < 10000:
+        print(f"ERROR: Total loaded samples ({len(all_raw_samples)}) is less than required ({MAX_SAMPLES_FOR_TRAINING_AND_EVALUATION}). Aborting.")
+        exit()
+    elif len(all_raw_samples) > 10000:
+        print(f"Total loaded samples ({len(all_raw_samples)}) exceeds required ({MAX_SAMPLES_FOR_TRAINING_AND_EVALUATION}). Sampling randomly...")
+        
+        indices = np.arange(len(all_raw_samples))
+        np.random.shuffle(indices)
+        sampled_indices = indices[:10000]
+        sampled_samples_raw = [all_raw_samples[i] for i in sampled_indices]
+        
+        print(f"Sampled down to {len(sampled_samples_raw)} samples for training and evaluation.")
+    else:
+        sampled_samples_raw = all_raw_samples
+        print(f"Using all {len(sampled_samples_raw)} loaded samples for training and evaluation.")
+    
+    # --- 4. データ準備 (3つの入力) ---
+    rX_A_raw = np.array([s['numeric_sequence_A'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
+    rX_B_raw = np.array([s['numeric_sequence_B'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
+    rX_C_raw = np.array([s['numeric_sequence_C'] for s in sampled_samples_raw], dtype=np.float64).reshape(-1, MAX_SEQUENCE_LENGTH)
+    ry_labels_raw = [s['target_label'] for s in sampled_samples_raw] 
+
+    # NumPy変換と数列の変換
+    rX_A_seq = np.array([signed_log1p(seq) for seq in rX_A_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
+    rX_B_seq = np.array([signed_log1p(seq) for seq in rX_B_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
+    rX_C_seq = np.array([signed_log1p(seq) for seq in rX_C_raw], dtype=np.float32).reshape(-1, MAX_SEQUENCE_LENGTH, SEQ_INPUT_NUM)
+    ry_labels = np.array(ry_labels_raw, dtype=np.int32)
+
+    ry_test_pm1  = np.where(ry_labels  == 1, 1.0, -1.0).astype(np.float32).reshape(-1, 1)
+
+    # 訓練データとテストデータに分割
+    # 3つの入力 (X_A_seq, X_B_seq, X_C_seq) と1つのターゲット (y_labels)
+
+    print("--- Check rX Types and Shapes ---")
+    # 全ての rX_* 変数について確認
+    for name, var in {
+        "rX_A_seq": rX_A_seq,  
+        "rX_B_seq": rX_B_seq,  
+        "rX_C_seq": rX_C_seq,  
+        "ry_test_pm1": ry_test_pm1,
+    }.items():
+        print(f"Variable: {name}")
+        print(f"  Type: {type(var)}")
+        if hasattr(var, 'shape'):
+            print(f"  Shape: {var.shape}")
+        else:
+            # このメッセージが出た変数こそがエラーの原因です
+            print(f"  --- ERROR: Has no shape attribute (Likely a String or None) ---")
+
+    # --- 推論＆評価（dAB < dAC → 予測=+1） ---
+    rdAB_test, rdAC_test = model.predict({
+        "A_seq": rX_A_seq,  
+        "B_seq": rX_B_seq,  
+        "C_seq": rX_C_seq, 
+        "y_pm1": ry_test_pm1,  # 未使用だが入力は必要
+    }, verbose=0)
+    ry_pred_pm1 = tf.cast((rdAB_test.values < rdAC_test.values), dtype=tf.int32).numpy()  # True→1, False→0
+    ry_true_pm1 = (ry_test_pm1.flatten() == 1.0).astype(np.int32)
+
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+    print("ACC:", accuracy_score(ry_true_pm1, ry_pred_pm1))
+    print("P  :", precision_score(ry_true_pm1, ry_pred_pm1))
+    print("R  :", recall_score(ry_true_pm1, ry_pred_pm1))
+    print("F1 :", f1_score(ry_true_pm1, ry_pred_pm1))
+    # 参考で AUC（距離差 dAC - dAB をスコアに）
+    rscores = (rdAC_test.values - rdAB_test.values).numpy().flatten()
+    print("AUC:", roc_auc_score(ry_true_pm1, rscores))
